@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from flask.templating import render_template as flask_render_template
 from jinja2 import (BaseLoader, TemplateNotFound, nodes, Template,  # noqa
-        ChoiceLoader, FileSystemLoader)
+        ChoiceLoader, FileSystemLoader, PrefixLoader)
 from speaklater import _LazyString
 from jinja2.ext import Extension
 from email.mime.multipart import MIMEMultipart
@@ -113,7 +113,7 @@ NEREID_TEMPLATE_FILTERS = dict(
 )
 
 
-class SiteNamePrefixLoader(FileSystemLoader):
+class SiteNamePrefixLoader(PrefixLoader):
     '''
     Loads templates from the file system but prefixes the template
     name with the name of the site.
@@ -133,16 +133,23 @@ class SiteNamePrefixLoader(FileSystemLoader):
 
     .. versionadded:: 2.8.0.4
     '''
-    def get_source(self, environment, template):
-        """
-        Returns the source of the template after finding it in the local
-        environment. This method adds the site name as a prefix to the
-        template name as though the website name is a folder.
-        """
-        template = os.path.join(request.nereid_website.name, template)
-        return super(SiteNamePrefixLoader, self).get_source(
-            environment, template
-        )
+    def __init__(self, searchpath, encoding='utf-8'):
+        mapping = {}
+        for dirpath, dirnames, filenames in os.walk(searchpath):
+            for dirname in dirnames:
+                mapping[dirname] = FileSystemLoader(
+                    os.path.join(searchpath, dirname), encoding
+                )
+            # Go through the loop only for the main directory
+            break
+
+        super(SiteNamePrefixLoader, self).__init__(mapping, delimiter='/')
+
+    def get_loader(self, template):
+        try:
+            return self.mapping[request.nereid_website.name], template
+        except KeyError:
+            raise TemplateNotFound(template)
 
 
 class ModuleTemplateLoader(ChoiceLoader):
