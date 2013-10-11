@@ -98,6 +98,12 @@ def render_template(template_name_or_list, **context):
     :param context: the variables that should be available in the
                     context of the template.
     """
+    if current_app.template_prefix_website_name and \
+            isinstance(template_name_or_list, basestring):
+        template_name_or_list = [
+            '/'.join([request.nereid_website.name, template_name_or_list]),
+            template_name_or_list
+        ]
     return LazyRenderer(template_name_or_list, context)
 
 
@@ -112,64 +118,6 @@ def nereid_default_template_ctx_processor():
 NEREID_TEMPLATE_FILTERS = dict(
     rst=_rst_to_html_filter,
 )
-
-
-class SiteNamePrefixLoader(BaseLoader):
-    '''
-    Loads templates from the file system but prefixes the template
-    name with the name of the site.
-
-    The loader takes the path to the templates as string, or if multiple
-    locations are wanted a list of them which is then looked up in the
-    given order:
-
-    >>> loader = SiteNamePrefixLoader('/path/to/templates')
-    >>> loader = SiteNamePrefixLoader(['/path/to/templates', '/other/path'])
-
-    The templates are expected to be created on separate folders with
-    the name of the website as defined when creating a nereid website.
-
-    This loader can be used to emulate the default behavior of
-    render_template in versions of Nereid prior to 2.8.0.4
-
-    .. versionadded:: 2.8.0.4
-    '''
-    def __init__(self, searchpath, encoding='utf-8'):
-        self.mapping = {}
-        for dirpath, dirnames, filenames in os.walk(searchpath):
-            for dirname in dirnames:
-                self.mapping[dirname] = FileSystemLoader(
-                    os.path.join(searchpath, dirname), encoding
-                )
-            # Go through the loop only for the main directory
-            break
-        self.delimiter = '/'
-        super(SiteNamePrefixLoader, self).__init__()
-
-    def get_loader(self, template):
-        try:
-            return self.mapping[request.nereid_website.name], template
-        except KeyError:
-            raise TemplateNotFound(template)
-
-    def get_source(self, environment, template):
-        loader, name = self.get_loader(template)
-        try:
-            return loader.get_source(environment, name)
-        except TemplateNotFound:
-            # re-raise the exception with the correct fileame here.
-            # (the one that includes the prefix)
-            raise TemplateNotFound(template)
-
-    @internalcode
-    def load(self, environment, name, globals=None):
-        loader, local_name = self.get_loader(name)
-        try:
-            return loader.load(environment, local_name, globals)
-        except TemplateNotFound:
-            # re-raise the exception with the correct fileame here.
-            # (the one that includes the prefix)
-            raise TemplateNotFound(name)
 
 
 class ModuleTemplateLoader(ChoiceLoader):
@@ -188,24 +136,17 @@ class ModuleTemplateLoader(ChoiceLoader):
                           matters and not the modules in the site-packages
     :param searchpath: Optional filesystem path where templates that override
                        templates bundled with nereid are located.
-    :param prefix_website_name: Flag to indicate if the website name needs to
-                                be prefixed when looking up templates in the
-                                given `searchpath`. This is not applicable to
-                                templates loaded from packages as it would not
-                                be possible to predict site names when writing
-                                modules.
-                                It is recommended not to use this feature, but
-                                use the `NereidSiteNameLoader` directly to get
-                                the same behavior. This would be deprecated in
-                                future.
 
     .. versionadded:: 2.8.0.4
+
+    .. versionchanged:: 2.8.0.6
+
+        Does not accept prefixing of site name anymore
     '''
     def __init__(
-            self, database_name, searchpath=None, prefix_website_name=False):
+            self, database_name, searchpath=None):
         self.database_name = database_name
         self.searchpath = searchpath
-        self.prefix_website_name = prefix_website_name
         self._loaders = None
 
     @property
@@ -232,13 +173,7 @@ class ModuleTemplateLoader(ChoiceLoader):
                 installed_module_list = [name for (name,) in cursor.fetchall()]
 
             if self.searchpath is not None:
-                # A path is specified from where templates have to be looked
-                # up first
-                if self.prefix_website_name:
-                    # TODO: raise a deprecation warning
-                    self._loaders.append(SiteNamePrefixLoader(self.searchpath))
-                else:
-                    self._loaders.append(FileSystemLoader(self.searchpath))
+                self._loaders.append(FileSystemLoader(self.searchpath))
 
             # Look into the module graph and check if they have template
             # folders and if they do add them too
