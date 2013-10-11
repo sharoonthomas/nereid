@@ -7,9 +7,10 @@ from decimal import Decimal
 
 from flask.templating import render_template as flask_render_template
 from jinja2 import (BaseLoader, TemplateNotFound, nodes, Template,  # noqa
-        ChoiceLoader, FileSystemLoader, PrefixLoader)
+        ChoiceLoader, FileSystemLoader, BaseLoader)
 from speaklater import _LazyString
 from jinja2.ext import Extension
+from jinja2.utils import internalcode
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.MIMEBase import MIMEBase
@@ -113,7 +114,7 @@ NEREID_TEMPLATE_FILTERS = dict(
 )
 
 
-class SiteNamePrefixLoader(PrefixLoader):
+class SiteNamePrefixLoader(BaseLoader):
     '''
     Loads templates from the file system but prefixes the template
     name with the name of the site.
@@ -134,22 +135,41 @@ class SiteNamePrefixLoader(PrefixLoader):
     .. versionadded:: 2.8.0.4
     '''
     def __init__(self, searchpath, encoding='utf-8'):
-        mapping = {}
+        self.mapping = {}
         for dirpath, dirnames, filenames in os.walk(searchpath):
             for dirname in dirnames:
-                mapping[dirname] = FileSystemLoader(
+                self.mapping[dirname] = FileSystemLoader(
                     os.path.join(searchpath, dirname), encoding
                 )
             # Go through the loop only for the main directory
             break
-
-        super(SiteNamePrefixLoader, self).__init__(mapping, delimiter='/')
+        self.delimiter = '/'
+        super(SiteNamePrefixLoader, self).__init__()
 
     def get_loader(self, template):
         try:
             return self.mapping[request.nereid_website.name], template
         except KeyError:
             raise TemplateNotFound(template)
+
+    def get_source(self, environment, template):
+        loader, name = self.get_loader(template)
+        try:
+            return loader.get_source(environment, name)
+        except TemplateNotFound:
+            # re-raise the exception with the correct fileame here.
+            # (the one that includes the prefix)
+            raise TemplateNotFound(template)
+
+    @internalcode
+    def load(self, environment, name, globals=None):
+        loader, local_name = self.get_loader(name)
+        try:
+            return loader.load(environment, local_name, globals)
+        except TemplateNotFound:
+            # re-raise the exception with the correct fileame here.
+            # (the one that includes the prefix)
+            raise TemplateNotFound(name)
 
 
 class ModuleTemplateLoader(ChoiceLoader):
