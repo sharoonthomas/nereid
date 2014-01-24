@@ -321,16 +321,24 @@ class Nereid(Flask):
         so the request is passed explicitly.
 
         """
+        from trytond.transaction import Transaction
+
         if request is not None:
+            transaction = None
+            if Transaction().cursor is None:
+                transaction = Transaction().start(self.database_name, 0, readonly=True)
 
             from trytond.pool import Pool
             Website = Pool().get('nereid.website')
 
             website = Website.get_from_host(request.host)
-            return website.get_url_adapter().bind_to_environ(
+            rv = website.get_url_adapter().bind_to_environ(
                 request.environ,
                 server_name=self.config['SERVER_NAME']
             )
+            if transaction:
+                Transaction().stop()
+            return rv
 
     def dispatch_request(self):
         """
@@ -361,7 +369,7 @@ class Nereid(Flask):
 
         with Transaction().start(self.database_name, 0, readonly=True):
             Website = Pool().get('nereid.website')
-            website = Website.get_from_host(req, active_record=False)
+            website = Website.get_from_host(req.host, active_record=False)
 
         for count in range(int(CONFIG['retry']), -1, -1):
             with Transaction().start(
