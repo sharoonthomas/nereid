@@ -3,7 +3,7 @@
 
 import pytz
 from werkzeug import abort, redirect
-from werkzeug.routing import Rule, Map, Submount
+from werkzeug.routing import Map, Submount
 from wtforms import Form, TextField, PasswordField, validators
 
 from nereid import jsonify, flash, render_template, url_for, cache
@@ -14,6 +14,7 @@ from nereid.signals import login, failed_login, logout
 from trytond.model import ModelView, ModelSQL, fields
 from trytond.transaction import Transaction
 from trytond.pool import Pool
+from trytond.cache import Cache
 
 from .i18n import _
 
@@ -376,24 +377,36 @@ class WebSite(ModelSQL, ModelView):
                 }
             return website
 
-    def get_url_adapter(self, url_rule_class=Rule):
+    _url_adapter_cache = Cache('nereid.website.url_adapter', context=False)
+
+    @classmethod
+    def clear_url_adapter_cache(cls, *args):
+        """
+        A method which conveniently clears the cache
+        """
+        cls._url_adapter_cache.clear()
+
+    def get_url_adapter(self, app):
         """
         Returns the URL adapter for the website
         """
-        # TODO: Memoize/Cache this
+        cache_rv = self._url_adapter_cache.get(self.id)
+
+        if cache_rv is not None:
+            return cache_rv
 
         url_rules = []
 
         # Add the static url
-        #url_rules.append(
-        #    url_rule_class(
-        #        self.static_url_path + '/<path:filename>',
-        #        endpoint='static',
-        #    )
-        #)
+        url_rules.append(
+            app.url_rule_class(
+                app.static_url_path + '/<path:filename>',
+                endpoint='static',
+            )
+        )
 
         for url_kwargs in self.url_map.get_rules_arguments():
-            rule = url_rule_class(
+            rule = app.url_rule_class(
                 url_kwargs.pop('rule'),
                 **url_kwargs
             )
@@ -404,7 +417,7 @@ class WebSite(ModelSQL, ModelView):
         if self.locales:
             # Create the URL map with locale prefix
             url_map.add(
-                url_rule_class(
+                app.url_rule_class(
                     '/', redirect_to='/%s' % self.default_locale.code,
                 ),
             )
@@ -413,7 +426,12 @@ class WebSite(ModelSQL, ModelView):
             # Create a new map with the given URLs
             map(url_map.add, url_rules)
 
-        # TODO: Add the url_rules from the URLMap of the Flask App
+        # Add the rules from the application's url map filled through the
+        # route decorator or otherwise
+        for rule in app.url_map._rules:
+            url_map.add(rule.empty())
+
+        self._url_adapter_cache.set(self.id, url_map)
 
         return url_map
 

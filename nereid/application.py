@@ -292,7 +292,7 @@ class Nereid(Flask):
                 'application_user': website.application_user.id,
                 'guest_user': website.guest_user.id,
                 'company': website.company.id,
-                'url_map': website.get_url_adapter(),
+                'url_map': website.get_url_adapter(self),
             }
 
         # Finally add the view_function for static
@@ -326,13 +326,15 @@ class Nereid(Flask):
         if request is not None:
             transaction = None
             if Transaction().cursor is None:
-                transaction = Transaction().start(self.database_name, 0, readonly=True)
+                transaction = Transaction().start(
+                    self.database_name, 0, readonly=True
+                )
 
             from trytond.pool import Pool
             Website = Pool().get('nereid.website')
 
             website = Website.get_from_host(request.host)
-            rv = website.get_url_adapter().bind_to_environ(
+            rv = website.get_url_adapter(self).bind_to_environ(
                 request.environ,
                 server_name=self.config['SERVER_NAME']
             )
