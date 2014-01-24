@@ -11,7 +11,6 @@ from flask.config import ConfigAttribute
 from flask.globals import _request_ctx_stack
 from flask.helpers import locked_cached_property
 from jinja2 import MemcachedBytecodeCache
-from werkzeug.routing import Submount, Map
 from werkzeug import import_string
 
 from .wrappers import Request, Response
@@ -21,7 +20,6 @@ from .templating import nereid_default_template_ctx_processor, \
     NEREID_TEMPLATE_FILTERS, ModuleTemplateLoader, LazyRenderer
 from .helpers import url_for
 from .ctx import RequestContext
-from .exceptions import WebsiteNotFound
 from .signals import transaction_start, transaction_stop
 
 
@@ -131,10 +129,6 @@ class Nereid(Flask):
         The import_name is forced into `Nereid`
         """
         super(Nereid, self).__init__('nereid', **config)
-
-        # Create the Map again because we do not want the static URL that
-        # flask creates which is website agnostic.
-        self.url_map = Map(host_matching=True)
 
         # Update the defaults for config attributes introduced by nereid
         self.config.update({
@@ -292,52 +286,13 @@ class Nereid(Flask):
         Website = self.pool.get("nereid.website")
 
         for website in Website.search([]):
-            url_rules = []
-
-            # Add the static url
-            url_rules.append(
-                self.url_rule_class(
-                    self.static_url_path + '/<path:filename>',
-                    endpoint='static',
-                    host=website.name,
-                )
-            )
-
-            for url_kwargs in website.url_map.get_rules_arguments():
-                rule = self.url_rule_class(
-                    url_kwargs.pop('rule'),
-                    host=website.name,
-                    **url_kwargs
-                )
-                rule.provide_automatic_options = True
-                url_rules.append(rule)   # Add rule to map
-                if (not url_kwargs['build_only']) \
-                        and not(url_kwargs['redirect_to']):
-                    # Add the method to the view_functions list if the
-                    # endpoint was not a build_only url
-                    self.view_functions[url_kwargs['endpoint']] = \
-                        self.get_method(url_kwargs['endpoint'])
-
-            if website.locales:
-                # Create the URL map with locale prefix
-                self.url_map.add(
-                    self.url_rule_class(
-                        '/',
-                        redirect_to='/%s' % website.default_locale.code,
-                        host=website.name
-                    ),
-                )
-                self.url_map.add(Submount('/<locale>', url_rules))
-            else:
-                # Create a new map with the given URLs
-                map(self.url_map.add, url_rules)
-
             self.websites[website.name] = {
                 'id': website.id,
                 'name': website.name,
                 'application_user': website.application_user.id,
                 'guest_user': website.guest_user.id,
                 'company': website.company.id,
+                'url_map': website.get_url_adapter(),
             }
 
         # Finally add the view_function for static
@@ -360,33 +315,22 @@ class Nereid(Flask):
     def request_context(self, environ):
         return RequestContext(self, environ)
 
-    def get_website_from_request(self, req):
-        """
-        Return a dictionary with the website specific details identified from
-        the request.
+    def create_url_adapter(self, request):
+        """Creates a URL adapter for the given request.  The URL adapter
+        is created at a point where the request context is not yet set up
+        so the request is passed explicitly.
 
-        :param req: Request object for the current request
         """
-        from trytond.transaction import Transaction
-        from trytond.pool import Pool
+        if request is not None:
 
-        with Transaction().start(self.database_name, 0, readonly=True):
-            # TODO: Make finding website faster by using a cache ?
+            from trytond.pool import Pool
             Website = Pool().get('nereid.website')
-            try:
-                website, = Website.search([
-                    ('name', '=', req.url_rule.host)
-                ])
-            except ValueError:
-                raise WebsiteNotFound()
-            else:
-                # Construct a dictionary since Active records are not
-                # usable outside the transaction
-                return {
-                    'id': website.id,
-                    'application_user': website.application_user.id,
-                    'company': website.company.id,
-                }
+
+            website = Website.get_from_host(request.host)
+            return website.get_url_adapter().bind_to_environ(
+                request.environ,
+                server_name=self.config['SERVER_NAME']
+            )
 
     def dispatch_request(self):
         """
@@ -396,6 +340,7 @@ class Nereid(Flask):
         """
         from trytond.transaction import Transaction
         from trytond.config import CONFIG
+        from trytond.pool import Pool
         from trytond import backend
         from trytond.cache import Cache
 
@@ -412,8 +357,11 @@ class Nereid(Flask):
            and req.method == 'OPTIONS':
             return self.make_default_options_response()
 
-        website = self.get_website_from_request(req)
         Cache.clean(self.database_name)
+
+        with Transaction().start(self.database_name, 0, readonly=True):
+            Website = Pool().get('nereid.website')
+            website = Website.get_from_host(req, active_record=False)
 
         for count in range(int(CONFIG['retry']), -1, -1):
             with Transaction().start(
@@ -460,7 +408,12 @@ class Nereid(Flask):
             req.view_args.pop('locale', None)
 
             # otherwise dispatch to the handler for that endpoint
-            meth = self.view_functions[req.url_rule.endpoint]
+            if req.url_rule.endpoint in self.view_functions:
+                meth = self.view_functions[req.url_rule.endpoint]
+            else:
+                model, method = req.url_rule.endpoint.rsplit('.', 1)
+                meth = getattr(Pool().get(model), method)
+
             if not hasattr(meth, 'im_self') or meth.im_self:
                 # static or class method
                 result = meth(**req.view_args)
