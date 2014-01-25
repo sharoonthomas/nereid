@@ -18,7 +18,7 @@ from .backend import TransactionManager
 from .session import NereidSessionInterface
 from .templating import nereid_default_template_ctx_processor, \
     NEREID_TEMPLATE_FILTERS, ModuleTemplateLoader, LazyRenderer
-from .helpers import url_for
+from .helpers import url_for, root_transaction_if_required
 from .ctx import RequestContext
 from .signals import transaction_start, transaction_stop
 
@@ -157,24 +157,12 @@ class Nereid(Flask):
         #: Load the cache
         self.load_cache()
 
-        #: A dictionary of the website names to spec of the website in the
-        #: backend. This is loaded by :meth:`load_websites` when the app is
-        #: initialised and all future lookups are made on this dictionary.
-        #: The specs include the following information
-        #:
-        #:  1. id - ID of the website in the backend
-        #:  2. url_map - The loaded url_map of the website
-        #:
-        #: .. tip:
-        #:  If a new website is introduced a reload of the application would
-        #:  be necessary for it to reflect here
-        self.websites = {}
+        self.view_functions['static'] = self.send_static_file
 
         # Backend initialisation
         self.load_backend()
-        with self.root_transaction:
-            self.load_websites()
-            self.add_ctx_processors_from_db()
+
+        self.add_ctx_processors_from_db()
 
         # Add the additional template context processors
         self.template_context_processors[None].append(
@@ -260,44 +248,7 @@ class Nereid(Flask):
         """
         return TransactionManager(self.database_name, 0, None)
 
-    def get_method(self, model_method):
-        """
-        Get the object from pool and fetch the method from it
-
-        model_method is expected to be '<model>.<method>'. The returned
-        function/method object can be stored in the endpoint map for a
-        faster lookup and response rather than looking it up at request
-        time.
-        """
-        model_method_split = model_method.split('.')
-        model = '.'.join(model_method_split[:-1])
-        method = model_method_split[-1]
-
-        try:
-            return getattr(self.pool.get(model), method)
-        except AttributeError:
-            raise Exception("Method %s not in Model %s" % (method, model))
-
-    def load_websites(self):
-        """
-        Load the websites and build a map of the website names to the ID
-        in database for quick connection to the website
-        """
-        Website = self.pool.get("nereid.website")
-
-        for website in Website.search([]):
-            self.websites[website.name] = {
-                'id': website.id,
-                'name': website.name,
-                'application_user': website.application_user.id,
-                'guest_user': website.guest_user.id,
-                'company': website.company.id,
-                'url_map': website.get_url_adapter(self),
-            }
-
-        # Finally add the view_function for static
-        self.view_functions['static'] = self.send_static_file
-
+    @root_transaction_if_required
     def add_ctx_processors_from_db(self):
         """
         Adds template context processors registers with the model
@@ -315,20 +266,14 @@ class Nereid(Flask):
     def request_context(self, environ):
         return RequestContext(self, environ)
 
+    @root_transaction_if_required
     def create_url_adapter(self, request):
         """Creates a URL adapter for the given request.  The URL adapter
         is created at a point where the request context is not yet set up
         so the request is passed explicitly.
 
         """
-        from trytond.transaction import Transaction
-
         if request is not None:
-            transaction = None
-            if Transaction().cursor is None:
-                transaction = Transaction().start(
-                    self.database_name, 0, readonly=True
-                )
 
             from trytond.pool import Pool
             Website = Pool().get('nereid.website')
@@ -338,8 +283,6 @@ class Nereid(Flask):
                 request.environ,
                 server_name=self.config['SERVER_NAME']
             )
-            if transaction:
-                Transaction().stop()
             return rv
 
     def dispatch_request(self):
@@ -371,13 +314,14 @@ class Nereid(Flask):
 
         with Transaction().start(self.database_name, 0, readonly=True):
             Website = Pool().get('nereid.website')
-            website = Website.get_from_host(req.host, active_record=False)
+            website = Website.get_from_host(req.host)
+
+            user, company = website.application_user.id, website.company.id
 
         for count in range(int(CONFIG['retry']), -1, -1):
             with Transaction().start(
                     self.database_name,
-                    website['application_user'],
-                    context={'company': website['company']}) as txn:
+                    user, context={'company': company}) as txn:
                 try:
                     transaction_start.send(self)
                     rv = self._dispatch_request(req)

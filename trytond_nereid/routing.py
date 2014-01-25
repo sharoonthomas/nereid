@@ -355,7 +355,7 @@ class WebSite(ModelSQL, ModelView):
         return jsonify(status=cls._user_status())
 
     @classmethod
-    def get_from_host(cls, host, silent=False, active_record=True):
+    def get_from_host(cls, host, silent=False):
         """
         Returns the website with name as given host
 
@@ -364,17 +364,9 @@ class WebSite(ModelSQL, ModelView):
         try:
             website, = cls.search([('name', '=', host)])
         except ValueError:
-            raise WebsiteNotFound()
+            if not silent:
+                raise WebsiteNotFound()
         else:
-            if not active_record:
-                # Construct a dictionary since Active records are not
-                # usable outside the transaction
-                return {
-                    'id': website.id,
-                    'application_user': website.application_user.id,
-                    'company': website.company.id,
-                    'url_adapter': website.get_url_adapter(),
-                }
             return website
 
     _url_adapter_cache = Cache('nereid.website.url_adapter', context=False)
