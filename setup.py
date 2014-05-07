@@ -111,6 +111,7 @@ install_requires = [
     'speaklater',
     'Flask-Babel>=0.9',
     'Flask-Login',
+    'click',
 ]
 
 for dep in info.get('depends', []):
@@ -172,6 +173,8 @@ setup(
     entry_points="""
     [trytond.modules]
     nereid = trytond.modules.nereid
+    [console_scripts]
+    nereid=nereid.cli:main
     """,
     test_suite='tests.suite',
     test_loader='trytond.test_loader:Loader',
